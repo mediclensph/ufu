@@ -34,11 +34,6 @@ fi
 # Get email for SSL certificate
 echo ""
 read -p "Enter your email for Let's Encrypt (optional, press Enter to skip): " EMAIL
-
-# Get Cloudflare preference
-echo ""
-read -p "Do you want to restrict access to Cloudflare IPs only? (y/n): " CLOUDFLARE_ONLY
-
 echo ""
 echo -e "${GREEN}Starting installation...${NC}"
 
@@ -47,32 +42,6 @@ apt update && apt upgrade -y
 
 # Install packages
 apt install nginx certbot python3-certbot-nginx ufw docker.io -y
-
-# UFW defaults
-ufw default deny incoming
-ufw default allow outgoing
-
-# Allow SSH
-ufw allow ssh
-
-# Configure Cloudflare IPs if requested
-if [[ "$CLOUDFLARE_ONLY" =~ ^[Yy]$ ]]; then
-    echo -e "${GREEN}Adding Cloudflare IPs...${NC}"
-    curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_v4
-    curl -s https://www.cloudflare.com/ips-v6 -o /tmp/cloudflare_ips_v6
-    
-    for ip in $(cat /tmp/cloudflare_ips_v4 /tmp/cloudflare_ips_v6 2>/dev/null); do
-        ufw allow proto tcp from $ip comment 'Cloudflare'
-    done
-    
-else
-    # Allow ports 80 and 443 for everyone
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-fi
-
-# Enable UFW
-echo "y" | ufw enable
 
 # Create The Lounge directory
 mkdir -p /home/docker/thelounge
