@@ -65,7 +65,6 @@ if [[ "$CLOUDFLARE_ONLY" =~ ^[Yy]$ ]]; then
         ufw allow proto tcp from $ip to any port 80,443 comment 'Cloudflare'
     done
     
-    rm -f /tmp/cloudflare_ips_v4 /tmp/cloudflare_ips_v6
 else
     # Allow ports 80 and 443 for everyone
     ufw allow 80/tcp
