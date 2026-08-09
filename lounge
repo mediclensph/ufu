@@ -62,7 +62,7 @@ if [[ "$CLOUDFLARE_ONLY" =~ ^[Yy]$ ]]; then
     curl -s https://www.cloudflare.com/ips-v6 -o /tmp/cloudflare_ips_v6
     
     for ip in $(cat /tmp/cloudflare_ips_v4 /tmp/cloudflare_ips_v6 2>/dev/null); do
-        ufw allow proto tcp from $ip to any port 80,443 comment 'Cloudflare'
+        ufw allow proto tcp from $ip comment 'Cloudflare'
     done
     
 else
