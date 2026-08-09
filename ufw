@@ -1,0 +1,37 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Get the Cloudflare IPs
+curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_$$
+echo "" >> /tmp/cloudflare_ips_$$
+curl -s https://www.cloudflare.com/ips-v6 >> /tmp/cloudflare_ips_$$
+
+# Reset the firewall to clean stuff.
+ufw --force reset
+
+# Make sure the firewall is enabled and started, as the above command
+# stops it.
+ufw enable
+
+# Allow my IP (change this to any IP you want to allow).
+ufw allow from 1.2.3.4
+
+# Allow SSH.
+ufw allow ssh
+
+# Allow traffic from Cloudflare IPs on all ports.
+for ip in $(cat /tmp/cloudflare_ips_$$)
+do
+  ufw allow proto tcp from $ip comment 'Cloudflare'
+done
+
+# Reject HTTP/HTTPS, for good measure.
+ufw reject 80
+ufw reject 443
+
+# Reload ufw.
+ufw reload > /dev/null
+
+# Show the rules to verify it worked.
+ufw status numbered
