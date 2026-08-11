@@ -43,26 +43,7 @@ apt update && apt upgrade -y
 # Install packages
 apt install nginx certbot python3-certbot-nginx ufw docker.io -y
 
-# Get the Cloudflare IPs
-curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_$$
-echo "" >> /tmp/cloudflare_ips_$$
-curl -s https://www.cloudflare.com/ips-v6 >> /tmp/cloudflare_ips_$$
 
-# Reset the firewall to clean stuff.
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow ssh
-for ip in $(cat /tmp/cloudflare_ips_$$)
-do
-  ufw allow proto tcp from $ip comment 'Cloudflare'
-done
-# Make sure the firewall is enabled and started, as the above command
-# stops it.
-ufw enable
-ufw reload > /dev/null
-ufw status numbered
-rm -rf /tmp/cloudflare_ips_$$
 # Create The Lounge directory
 mkdir -p /home/docker/thelounge
 
@@ -199,7 +180,8 @@ systemctl reload nginx
 echo ""
 echo -e "${YELLOW}========================================${NC}"
 echo -e "${YELLOW}IMPORTANT: DNS must point to this server${NC}"
-echo -e "${YELLOW}Cloudflare must be set to DNS only (grey cloud)${NC}"
+echo -e "${YELLOW}Cloudflare must be set to DNS only not Proxied(grey cloud)${NC}"
+echo -e "${YELLOW}Once this script finishes then reactivate orange cloud Proxied${NC}"
 echo -e "${YELLOW}========================================${NC}"
 echo ""
 read -p "Has DNS been configured for ${HOSTNAME}? (y/n): " DNS_READY
@@ -216,7 +198,26 @@ else
     echo -e "${YELLOW}⚠️  Skipping SSL certificate installation.${NC}"
     echo -e "${YELLOW}   Run: sudo certbot --nginx -d ${HOSTNAME}${NC}"
 fi
+# Get the Cloudflare IPs
+curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_$$
+echo "" >> /tmp/cloudflare_ips_$$
+curl -s https://www.cloudflare.com/ips-v6 >> /tmp/cloudflare_ips_$$
 
+# Reset the firewall to clean stuff.
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+for ip in $(cat /tmp/cloudflare_ips_$$)
+do
+  ufw allow proto tcp from $ip comment 'Cloudflare'
+done
+# Make sure the firewall is enabled and started, as the above command
+# stops it.
+ufw enable
+ufw reload > /dev/null
+ufw status numbered
+rm -rf /tmp/cloudflare_ips_$$
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✅ Installation complete!${NC}"
