@@ -218,6 +218,7 @@ ufw enable
 ufw reload > /dev/null
 ufw status numbered
 rm -rf /tmp/cloudflare_ips_$$
+(crontab -l 2>/dev/null; echo "0 * * * * find /home/docker/thelounge/uploads/* -mmin +60 -delete 2>/dev/null") | crontab -
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✅ Installation complete!${NC}"
