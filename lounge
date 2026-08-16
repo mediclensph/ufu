@@ -221,21 +221,32 @@ rm -rf /tmp/cloudflare_ips_$$
 # Configure Certbot renewal hooks for UFW
 echo -e "${GREEN}Configuring Certbot renewal hooks...${NC}"
 
-# Create the renewal hook scripts
-mkdir -p /etc/letsencrypt/renewal-hooks/pre
-mkdir -p /etc/letsencrypt/renewal-hooks/post
-
+# Pre-hook: Allow port 80 for Let's Encrypt validation
 cat <<'EOF' > /etc/letsencrypt/renewal-hooks/pre/01-ufw-allow-http.sh
 #!/bin/bash
 # Temporarily allow port 80 for Let's Encrypt validation
-ufw allow 80/tcp 2>/dev/null || true
+ufw allow 80/tcp comment 'Certbot Renewal' 2>/dev/null || true
+ufw reload
 EOF
 
+# Post-hook: Remove the temporary port 80 rules
 cat <<'EOF' > /etc/letsencrypt/renewal-hooks/post/01-ufw-restore-http.sh
 #!/bin/bash
-# Re-block port 80 after renewal by removing the allow rule
-# This finds and deletes the "allow 80/tcp" rule that was added
-ufw status numbered | grep -E '80/tcp.*ALLOW' | head -1 | awk '{print $1}' | tr -d '[]' | xargs -r ufw delete
+# Remove both IPv4 and IPv6 temporary port 80 rules
+
+# Delete IPv4 rule
+RULE4=$(ufw status numbered | grep -E '80/tcp.*Certbot Renewal' | head -1 | awk '{print $1}' | tr -d '[]')
+if [ -n "$RULE4" ]; then
+    echo "y" | ufw delete $RULE4 2>/dev/null || true
+fi
+
+# Delete IPv6 rule
+RULE6=$(ufw status numbered | grep -E '80/tcp \(v6\).*Certbot Renewal' | head -1 | awk '{print $1}' | tr -d '[]')
+if [ -n "$RULE6" ]; then
+    echo "y" | ufw delete $RULE6 2>/dev/null || true
+fi
+
+ufw reload
 EOF
 
 chmod +x /etc/letsencrypt/renewal-hooks/pre/01-ufw-allow-http.sh
