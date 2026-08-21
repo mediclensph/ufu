@@ -92,25 +92,25 @@ module.exports = {
         baseUrl: null,
     },
     transports: ["polling", "websocket"],
-    leaveMessage: "The Lounge - https://thelounge.chat",
+    leaveMessage: "Goodbye",
     defaults: {
         name: "Undernet",
-        host: "us6.undernet.org",
+        host: "us.undernet.org",
         port: 6667,
         password: "",
         tls: false,
         rejectUnauthorized: true,
-        nick: "thelounge%%",
-        username: "thelounge",
-        realname: "",
-        join: "#welcome",
-        leaveMessage: "",
+        nick: "mynick%%",
+        username: "myusername",
+        realname: "myname",
+        join: "#whatever",
+        leaveMessage: "Goodbye",
     },
     lockNetwork: false,
     messageStorage: ["sqlite", "text"],
     storagePolicy: {
         enabled: false,
-        maxAgeDays: 7,
+        maxAgeDays: 3,
         deletionPolicy: "statusOnly",
     },
     useHexIp: false,
@@ -176,28 +176,6 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl reload nginx
 
-# Get SSL certificate if DNS is configured
-echo ""
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}IMPORTANT: DNS must point to this server${NC}"
-echo -e "${YELLOW}Cloudflare must be set to DNS only not Proxied(grey cloud)${NC}"
-echo -e "${YELLOW}Once this script finishes then reactivate orange cloud Proxied${NC}"
-echo -e "${YELLOW}========================================${NC}"
-echo ""
-read -p "Has DNS been configured for ${HOSTNAME}? (y/n): " DNS_READY
-
-if [[ "$DNS_READY" =~ ^[Yy]$ ]]; then
-    if [ -n "$EMAIL" ]; then
-        certbot --nginx -d ${HOSTNAME} --email ${EMAIL} --non-interactive --agree-tos
-    else
-        certbot --nginx -d ${HOSTNAME}
-    fi
-    systemctl reload nginx
-    echo -e "${GREEN}✅ SSL certificate installed!${NC}"
-else
-    echo -e "${YELLOW}⚠️  Skipping SSL certificate installation.${NC}"
-    echo -e "${YELLOW}   Run: sudo certbot --nginx -d ${HOSTNAME}${NC}"
-fi
 # Get the Cloudflare IPs
 curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_$$
 echo "" >> /tmp/cloudflare_ips_$$
@@ -208,6 +186,7 @@ ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
+ufw limit ssh
 for ip in $(cat /tmp/cloudflare_ips_$$)
 do
   ufw allow proto tcp from $ip comment 'Cloudflare'
@@ -254,7 +233,30 @@ chmod +x /etc/letsencrypt/renewal-hooks/post/01-ufw-restore-http.sh
 
 echo -e "${GREEN}✅ Certbot hooks configured!${NC}"
 
+# Get SSL certificate if DNS is configured
+echo ""
+echo -e "${YELLOW}========================================${NC}"
+echo -e "${YELLOW}IMPORTANT: DNS must point to this server${NC}"
+echo -e "${YELLOW}Cloudflare DNS - Orange Cloud ON must be set ${NC}"
+echo -e "${YELLOW}========================================${NC}"
+echo ""
+read -p "Has DNS been configured for ${HOSTNAME}? (y/n): " DNS_READY
+
+if [[ "$DNS_READY" =~ ^[Yy]$ ]]; then
+    if [ -n "$EMAIL" ]; then
+        certbot --nginx -d ${HOSTNAME} --email ${EMAIL} --non-interactive --agree-tos
+    else
+        certbot --nginx -d ${HOSTNAME}
+    fi
+    systemctl reload nginx
+    echo -e "${GREEN}✅ SSL certificate installed!${NC}"
+else
+    echo -e "${YELLOW}⚠️  Skipping SSL certificate installation.${NC}"
+    echo -e "${YELLOW}   Run: sudo certbot --nginx -d ${HOSTNAME}${NC}"
+fi
+    echo -e "${GREEN}✅ Activating Auto Deleting of Uploaded files after 1 Hour ${NC}"
 (crontab -l 2>/dev/null; echo "0 * * * * find /home/docker/thelounge/uploads/* -mmin +60 -delete 2>/dev/null") | crontab -
+    echo -e "${GREEN}✅ Activated !! ${NC}"
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✅ Installation complete!${NC}"
