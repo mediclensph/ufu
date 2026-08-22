@@ -41,7 +41,7 @@ echo -e "${GREEN}Starting installation...${NC}"
 apt update && apt upgrade -y
 
 # Install packages
-apt install nginx certbot python3-certbot-nginx ufw docker.io -y
+apt install nginx certbot python3-certbot-nginx ufw fail2ban docker.io -y
 
 
 # Create The Lounge directory
