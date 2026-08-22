@@ -197,11 +197,63 @@ ufw enable
 ufw reload > /dev/null
 ufw status numbered
 rm -rf /tmp/cloudflare_ips_$$
+
+# Configure fail2ban
+echo -e "${GREEN}Configuring fail2ban for SSH protection...${NC}"
+
+# Backup original config
+if [ ! -f /etc/fail2ban/jail.local ]; then
+    cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+fi
+
+# Create jail.d directory
+mkdir -p /etc/fail2ban/jail.d
+
+# Create main jail configuration
+cat <<EOF > /etc/fail2ban/jail.d/00-defaults.conf
+[DEFAULT]
+# Ban duration (in seconds)
+bantime = 10m
+
+# Time frame for detection (in seconds)
+findtime = 10m
+
+# Number of failures before ban
+maxretry = 5
+
+# Action to take
+action = %(action_mwl)s
+
+# Whitelist IPs
+WHITELIST_IPS="127.0.0.1/8 ::1"
+EOF
+
+# Create SSH jail configuration
+cat <<EOF > /etc/fail2ban/jail.d/sshd.local
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 1h
+WHITELIST_IPS="127.0.0.1/8 ::1"
+EOF
+
+# Restart and enable fail2ban
+echo -e "${YELLOW}Restarting fail2ban...${NC}"
+systemctl restart fail2ban
+systemctl enable fail2ban
+echo -e "${YELLOW}fail2ban has been configured and activated...${NC}"
+
+#Certbot dry run to create /pre and /post folders 
+echo -e "${GREEN}Creating Certbot hooks...${NC}"
+certbot certonly --dry-run --nginx -d ${HOSTNAME}
+mkdir -p /etc/letsencrypt/renewal-hooks/{pre,post}
+
 # Configure Certbot renewal hooks for UFW
 echo -e "${GREEN}Configuring Certbot renewal hooks...${NC}"
-# Create the renewal hook directories if they don't exist
-mkdir -p /etc/letsencrypt/renewal-hooks/pre
-mkdir -p /etc/letsencrypt/renewal-hooks/post
+
 # Pre-hook: Allow port 80 for Let's Encrypt validation
 cat <<'EOF' > /etc/letsencrypt/renewal-hooks/pre/01-ufw-allow-http.sh
 #!/bin/bash
