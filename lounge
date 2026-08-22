@@ -101,6 +101,7 @@ module.exports = {
         tls: false,
         rejectUnauthorized: true,
         nick: "mynick%%",
+        keepNick: true,
         username: "myusername",
         realname: "myname",
         join: "#whatever",
