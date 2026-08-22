@@ -175,9 +175,10 @@ rm -f /etc/nginx/sites-enabled/default
 # Test and reload Nginx
 nginx -t
 systemctl reload nginx
-#Certbot dry run to create /pre and /post folders 
+
+# Certbot dry run to create /pre and /post folders 
 echo -e "${GREEN}CERTBOT DRY-RUN FOR TESTING BEFORE ACTION ${NC}"
-certbot certonly --dry-run --nginx -d ${HOSTNAME}
+certbot certonly --dry-run --nginx -d ${HOSTNAME} 2>&1 || echo -e "${YELLOW}⚠️  Dry-run failed (this is OK if DNS isn't ready yet)${NC}"
 
 # Get the Cloudflare IPs
 curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_$$
