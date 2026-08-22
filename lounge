@@ -256,9 +256,14 @@ else
     echo -e "${YELLOW}⚠️  Skipping SSL certificate installation.${NC}"
     echo -e "${YELLOW}   Run: sudo certbot --nginx -d ${HOSTNAME}${NC}"
 fi
-    echo -e "${GREEN}✅ Activating Auto Deleting of Uploaded files after 1 Hour ${NC}"
-(crontab -l 2>/dev/null; echo "0 * * * * find /home/docker/thelounge/uploads/* -mmin +60 -delete 2>/dev/null") | crontab -
+# Auto-delete uploaded files after 1 hour
+echo -e "${GREEN}✅ Activating Auto Deleting of Uploaded files after 1 Hour ${NC}"
+mkdir -p /home/docker/thelounge/uploads
+if (crontab -l 2>/dev/null; echo "0 * * * * find /home/docker/thelounge/uploads/* -mmin +60 -delete 2>/dev/null") | crontab - 2>/dev/null; then
     echo -e "${GREEN}✅ Activated !! ${NC}"
+else
+    echo -e "${YELLOW}⚠️  Could not add cron job. Check permissions.${NC}"
+fi
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}✅ Installation complete!${NC}"
