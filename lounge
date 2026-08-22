@@ -199,7 +199,9 @@ ufw status numbered
 rm -rf /tmp/cloudflare_ips_$$
 # Configure Certbot renewal hooks for UFW
 echo -e "${GREEN}Configuring Certbot renewal hooks...${NC}"
-
+# Create the renewal hook directories if they don't exist
+mkdir -p /etc/letsencrypt/renewal-hooks/pre
+mkdir -p /etc/letsencrypt/renewal-hooks/post
 # Pre-hook: Allow port 80 for Let's Encrypt validation
 cat <<'EOF' > /etc/letsencrypt/renewal-hooks/pre/01-ufw-allow-http.sh
 #!/bin/bash
