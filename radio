@@ -208,24 +208,27 @@ systemctl start liquidsoap
 
 # ---- UFW: Cloudflare only ----
 echo -e "${GREEN}Configuring UFW with Cloudflare IPs...${NC}"
-curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cf4
-curl -s https://www.cloudflare.com/ips-v6 -o /tmp/cf6
+curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_$$
+echo "" >> /tmp/cloudflare_ips_$$
+curl -s https://www.cloudflare.com/ips-v6 >> /tmp/cloudflare_ips_$$
 
+# Reset the firewall to clean stuff.
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 
-# SSH with rate limiting
 ufw limit ssh
-
-# Allow Cloudflare IPs on ports 80 and 443
-for ip in $(cat /tmp/cf4 /tmp/cf6); do
-    ufw allow proto tcp from "$ip" to any port 80,443 comment 'Cloudflare'
+for ip in $(cat /tmp/cloudflare_ips_$$)
+do
+  # Skip empty lines just in case
+  [ -n "$ip" ] && ufw allow proto tcp from "$ip" to any port 80,443 comment 'Cloudflare'
 done
-
-ufw --force enable
-ufw reload
-rm -f /tmp/cf4 /tmp/cf6
+# Make sure the firewall is enabled and started, as the above command
+# stops it.
+ufw enable
+ufw reload > /dev/null
+ufw status numbered
+rm -rf /tmp/cloudflare_ips_$$
 
 # ---- Create Cloudflare update script ----
 cat <<'EOF' > /usr/local/bin/update-cloudflare-ufw
@@ -233,20 +236,22 @@ cat <<'EOF' > /usr/local/bin/update-cloudflare-ufw
 # Update Cloudflare IPs in UFW
 # WARNING: This removes ALL rules with 'Cloudflare' comment
 
-curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cf4
-curl -s https://www.cloudflare.com/ips-v6 -o /tmp/cf6
+curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cloudflare_ips_$$
+echo "" >> /tmp/cloudflare_ips_$$
+curl -s https://www.cloudflare.com/ips-v6 >> /tmp/cloudflare_ips_$$
 
 # Remove old Cloudflare rules
 ufw status numbered | grep 'Cloudflare' | awk '{print $1}' | tr -d '[]' | tac | while read rule; do
     echo "y" | ufw delete $rule 2>/dev/null || true
 done
 
-for ip in $(cat /tmp/cf4 /tmp/cf6); do
+for ip in $(cat /tmp/cloudflare_ips_$$); do
     ufw allow proto tcp from "$ip" to any port 80,443 comment 'Cloudflare'
 done
 
-ufw reload
-rm -f /tmp/cf4 /tmp/cf6
+ufw reload > /dev/null
+ufw status numbered
+rm -rf /tmp/cloudflare_ips_$$
 EOF
 chmod +x /usr/local/bin/update-cloudflare-ufw
 
