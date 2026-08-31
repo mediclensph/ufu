@@ -82,10 +82,14 @@ apt install -y nginx icecast2 liquidsoap fail2ban ufw curl certbot python3-certb
 # ---- FileBrowser ----
 echo -e "${GREEN}Installing FileBrowser...${NC}"
 curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+
 mkdir -p /var/music
 chown www-data:www-data /var/music
 
-# Initialize DB and create admin user
+# Initialize FileBrowser database and create admin user
+filebrowser -d /etc/filebrowser.db config init
+filebrowser -d /etc/filebrowser.db config set --address=127.0.0.1 --port=8080
+filebrowser -d /etc/filebrowser.db config set --auth.method=json
 filebrowser -d /etc/filebrowser.db users add "$FB_USER" "$FB_PASS" --perm.admin
 chown www-data:www-data /etc/filebrowser.db
 
@@ -110,10 +114,18 @@ systemctl start filebrowser
 
 # ---- Icecast ----
 echo -e "${GREEN}Configuring Icecast...${NC}"
+# Backup original config
+cp /etc/icecast2/icecast.xml /etc/icecast2/icecast.xml.backup
+
+# Set bind address
 sed -i 's/<bind-address>.*<\/bind-address>/<bind-address>127.0.0.1<\/bind-address>/' /etc/icecast2/icecast.xml
+
+# Set passwords
 sed -i "s/<source-password>.*<\/source-password>/<source-password>${ICECAST_SOURCE_PASS}<\/source-password>/" /etc/icecast2/icecast.xml
 sed -i "s/<relay-password>.*<\/relay-password>/<relay-password>${ICECAST_RELAY_PASS}<\/relay-password>/" /etc/icecast2/icecast.xml
 sed -i "s/<admin-password>.*<\/admin-password>/<admin-password>${ICECAST_ADMIN_PASS}<\/admin-password>/" /etc/icecast2/icecast.xml
+
+# Add mount restriction for MP3 only
 sed -i '/<\/icecast>/i \
     <mount>\n        <mount-name>\/live.mp3<\/mount-name>\n        <type>application\/mpeg<\/type>\n        <bitrate>128<\/bitrate>\n    <\/mount>' /etc/icecast2/icecast.xml
 
@@ -123,7 +135,7 @@ systemctl start icecast2
 # ---- Liquidsoap ----
 echo -e "${GREEN}Configuring Liquidsoap...${NC}"
 mkdir -p /var/log/liquidsoap
-chown -R liquidsoap:liquidsoap /var/log/liquidsoap
+chown -R liquidsoap:liquidsoap /var/log/liquidsoap 2>/dev/null || chown -R icecast2:icecast /var/log/liquidsoap
 
 cat <<EOF > /etc/liquidsoap/radio.liq
 #!/usr/bin/liquidsoap
@@ -149,7 +161,7 @@ output.icecast(
 )
 EOF
 
-# Create a dedicated systemd service to ensure the script actually runs
+# Create a dedicated systemd service
 cat <<EOF > /etc/systemd/system/liquidsoap.service
 [Unit]
 Description=Liquidsoap Radio Automation
@@ -178,8 +190,10 @@ ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 
+# SSH with rate limiting
 ufw limit ssh
 
+# Allow Cloudflare IPs on ports 80 and 443
 for ip in $(cat /tmp/cf4 /tmp/cf6); do
     ufw allow proto tcp from "$ip" to any port 80,443 comment 'Cloudflare'
 done
@@ -191,6 +205,9 @@ rm -f /tmp/cf4 /tmp/cf6
 # ---- Create Cloudflare update script ----
 cat <<'EOF' > /usr/local/bin/update-cloudflare-ufw
 #!/bin/bash
+# Update Cloudflare IPs in UFW
+# WARNING: This removes ALL rules with 'Cloudflare' comment
+
 curl -s https://www.cloudflare.com/ips-v4 -o /tmp/cf4
 curl -s https://www.cloudflare.com/ips-v6 -o /tmp/cf6
 
@@ -208,9 +225,10 @@ rm -f /tmp/cf4 /tmp/cf6
 EOF
 chmod +x /usr/local/bin/update-cloudflare-ufw
 
-# ---- Nginx ----
-echo -e "${GREEN}Configuring Nginx...${NC}"
+# ---- Nginx with Bot Protection ----
+echo -e "${GREEN}Configuring Nginx with bot protection...${NC}"
 mkdir -p /var/www/play
+
 cat <<'EOF' > /var/www/play/index.html
 <!DOCTYPE html>
 <html>
@@ -247,7 +265,37 @@ upstream icecast     { server 127.0.0.1:8000; }
 upstream filebrowser { server 127.0.0.1:8080; }
 upstream liquidsoap  { server 127.0.0.1:8005; }
 
+# ---- Rate Limiting ----
 limit_req_zone \$binary_remote_addr zone=radio:10m rate=10r/s;
+limit_conn_zone \$binary_remote_addr zone=conn_limit:10m;
+
+# ---- Bot Detection ----
+# Block known bad User-Agents
+map \$http_user_agent \$blocked_ua {
+    default 0;
+    
+    # Stream rippers
+    ~*(StreamRipper|IcecastRipper|ShoutcastRipper|ripper|Ripper) 1;
+    ~*(youtube-dl|you-get|wget|curl|python-requests) 1;
+    ~*(libwww-perl|java|php|perl) 1;
+    ~*(masscan|nmap|zmap|nikto|sqlmap) 1;
+    
+    # Aggressive crawlers/bots
+    ~*(semrush|ahrefs|majestic|rogerbot|dotbot|bingbot|slurp) 1;
+    ~*(MJ12bot|AhrefsBot|SemrushBot|DotBot|BLEXBot|PetalBot) 1;
+    ~*(DuckDuckBot|Baiduspider|YandexBot|Sogou|Exabot) 1;
+    
+    # Empty User-Agent (often bots)
+    "" 1;
+}
+
+# Block direct IP access (only allow via domain)
+map \$host \$blocked_host {
+    default 1;
+    ${PLAY_DOMAIN} 0;
+    ${FILES_DOMAIN} 0;
+    ${DJ_DOMAIN} 0;
+}
 
 # ---- play subdomain ----
 server {
@@ -257,6 +305,19 @@ server {
     root /var/www/play;
     index index.html;
 
+    # Rate limiting for all requests
+    limit_req zone=radio burst=20 nodelay;
+    limit_conn conn_limit 10;
+
+    # Bot protection for all requests
+    if (\$blocked_ua) {
+        return 403;
+    }
+    
+    if (\$blocked_host) {
+        return 403;
+    }
+
     location = / {
         try_files \$uri \$uri/ =404;
     }
@@ -264,11 +325,20 @@ server {
     location /live.mp3 {
         proxy_pass http://icecast/live.mp3;
         proxy_buffering off;
-        limit_req zone=radio burst=20 nodelay;
+        
+        # Stricter limits for stream
+        limit_req zone=radio burst=10 nodelay;
+        limit_conn conn_limit 5;
+        
+        # Headers
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # Hide that we're proxying Icecast
+        proxy_hide_header Server;
+        proxy_set_header Server "nginx";
     }
 
     location ~ ^/(admin|status|stats) {
@@ -289,6 +359,15 @@ server {
     auth_basic_user_file /etc/nginx/.htpasswd_files;
     client_max_body_size 500M;
 
+    # Rate limiting for file uploads
+    limit_req zone=radio burst=5 nodelay;
+    limit_conn conn_limit 3;
+
+    # Bot protection
+    if (\$blocked_ua) {
+        return 403;
+    }
+
     location / {
         proxy_pass http://filebrowser;
         proxy_set_header Host \$host;
@@ -305,6 +384,15 @@ server {
 
     auth_basic "DJ Area";
     auth_basic_user_file /etc/nginx/.htpasswd_dj;
+
+    # Rate limiting for DJ connections
+    limit_req zone=radio burst=5 nodelay;
+    limit_conn conn_limit 2;
+
+    # Bot protection
+    if (\$blocked_ua) {
+        return 403;
+    }
 
     location / {
         proxy_pass http://liquidsoap;
@@ -323,6 +411,11 @@ server {
 server {
     listen 80;
     server_name ${PLAY_DOMAIN} ${FILES_DOMAIN} ${DJ_DOMAIN};
+    
+    # Rate limiting for redirects
+    limit_req zone=radio burst=20 nodelay;
+    limit_conn conn_limit 10;
+    
     return 301 https://\$host\$request_uri;
 }
 EOF
@@ -337,17 +430,26 @@ mkdir -p /etc/letsencrypt/renewal-hooks/{pre,post}
 
 cat <<'EOF' > /etc/letsencrypt/renewal-hooks/pre/01-ufw-allow-http.sh
 #!/bin/bash
+# Temporarily allow port 80 for Let's Encrypt validation
 ufw allow 80/tcp comment 'Certbot Renewal' 2>/dev/null || true
 ufw reload
 EOF
 
 cat <<'EOF' > /etc/letsencrypt/renewal-hooks/post/01-ufw-restore-http.sh
 #!/bin/bash
-RULE4=$(ufw status numbered | grep -E '80/tcp.*Certbot Renewal' | head -1 | awk '{print $1}' | tr -d '[]')
-[ -n "$RULE4" ] && echo "y" | ufw delete $RULE4 2>/dev/null || true
+# Remove temporary port 80 rules after renewal
 
+# Delete IPv4 rule
+RULE4=$(ufw status numbered | grep -E '80/tcp.*Certbot Renewal' | head -1 | awk '{print $1}' | tr -d '[]')
+if [ -n "$RULE4" ]; then
+    echo "y" | ufw delete $RULE4 2>/dev/null || true
+fi
+
+# Delete IPv6 rule
 RULE6=$(ufw status numbered | grep -E '80/tcp \(v6\).*Certbot Renewal' | head -1 | awk '{print $1}' | tr -d '[]')
-[ -n "$RULE6" ] && echo "y" | ufw delete $RULE6 2>/dev/null || true
+if [ -n "$RULE6" ]; then
+    echo "y" | ufw delete $RULE6 2>/dev/null || true
+fi
 
 ufw reload
 EOF
@@ -357,7 +459,8 @@ chmod +x /etc/letsencrypt/renewal-hooks/post/01-ufw-restore-http.sh
 
 # ---- Fail2ban ----
 echo -e "${GREEN}Configuring fail2ban...${NC}"
-cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local 2>/dev/null || true
+
 cat <<EOF > /etc/fail2ban/jail.d/sshd.local
 [sshd]
 enabled = true
@@ -366,6 +469,22 @@ filter = sshd
 logpath = /var/log/auth.log
 maxretry = 3
 bantime = 1h
+EOF
+
+# ---- Fail2ban rules for stream rippers ----
+cat <<'EOF' > /etc/fail2ban/filter.d/stream-ripper.conf
+[Definition]
+failregex = ^<HOST> -.*"GET .*\.mp3.*" 403
+ignoreregex =
+EOF
+
+cat <<EOF > /etc/fail2ban/jail.d/stream-ripper.local
+[stream-ripper]
+enabled = true
+filter = stream-ripper
+logpath = /var/log/nginx/*access.log
+maxretry = 3
+bantime = 24h
 EOF
 
 systemctl enable fail2ban
@@ -378,10 +497,12 @@ echo -e "${YELLOW}IMPORTANT: DNS must point to this server${NC}"
 echo -e "${YELLOW}Cloudflare DNS - Orange Cloud ON must be set${NC}"
 echo -e "${YELLOW}========================================${NC}"
 read -p "Has DNS been configured for ${DOMAIN} and subdomains? (y/n): " DNS_READY
+
 if [[ "$DNS_READY" =~ ^[Yy]$ ]]; then
     if [ -n "$EMAIL" ]; then
         certbot --nginx -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --email "${EMAIL}" --non-interactive --agree-tos
     else
+        echo -e "${YELLOW}No email provided. Using --register-unsafely-without-email${NC}"
         certbot --nginx -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --register-unsafely-without-email --non-interactive --agree-tos
     fi
     systemctl reload nginx
@@ -432,7 +553,6 @@ manage_users() {
                     echo -e "${RED}Username cannot be empty${NC}"
                     continue
                 fi
-                # Create a temporary file without the user
                 awk -F: -v user="$REMOVE_FB_USER" '$1 != user' /etc/nginx/.htpasswd_files > /tmp/.htpasswd_files.tmp
                 mv /tmp/.htpasswd_files.tmp /etc/nginx/.htpasswd_files
                 echo -e "${GREEN}✅ FileBrowser user ${REMOVE_FB_USER} removed!${NC}"
@@ -445,12 +565,6 @@ manage_users() {
                 read -p "Enter new DJ username: " NEW_DJ_USER
                 if [ -z "$NEW_DJ_USER" ]; then
                     echo -e "${RED}Username cannot be empty${NC}"
-                    continue
-                fi
-                read -sp "Enter password for ${NEW_DJ_USER}: " NEW_DJ_PASS
-                echo ""
-                if [ -z "$NEW_DJ_PASS" ]; then
-                    echo -e "${RED}Password cannot be empty${NC}"
                     continue
                 fi
                 htpasswd /etc/nginx/.htpasswd_dj "$NEW_DJ_USER"
@@ -519,6 +633,7 @@ echo "  Restart Liquidsoap:   systemctl restart liquidsoap"
 echo "  Update Cloudflare IPs: /usr/local/bin/update-cloudflare-ufw"
 echo "  View Icecast logs:    tail -f /var/log/icecast2/error.log"
 echo "  View Liquidsoap logs: tail -f /var/log/liquidsoap/radio.log"
+echo "  View Nginx logs:      tail -f /var/log/nginx/*.log"
 echo ""
 
 # ---- Create standalone user management script ----
