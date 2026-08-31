@@ -543,7 +543,8 @@ manage_users() {
                     echo -e "${RED}Password cannot be empty${NC}"
                     continue
                 fi
-                htpasswd -b /etc/nginx/.htpasswd_files "$NEW_FB_USER"
+                # Added "$NEW_FB_PASS" at the end
+                htpasswd -b /etc/nginx/.htpasswd_files "$NEW_FB_USER" "$NEW_FB_PASS"
                 echo -e "${GREEN}✅ FileBrowser user ${NEW_FB_USER} added!${NC}"
                 echo -e "${YELLOW}They can log in at: https://${FILES_DOMAIN}${NC}"
                 ;;
@@ -567,7 +568,14 @@ manage_users() {
                     echo -e "${RED}Username cannot be empty${NC}"
                     continue
                 fi
-                htpasswd -b /etc/nginx/.htpasswd_dj "$NEW_DJ_USER"
+                read -sp "Enter password for ${NEW_DJ_USER}: " NEW_DJ_PASS
+                echo ""
+                if [ -z "$NEW_DJ_PASS" ]; then
+                    echo -e "${RED}Password cannot be empty${NC}"
+                    continue
+                fi
+                # Added "$NEW_DJ_PASS" at the end
+                htpasswd -b /etc/nginx/.htpasswd_dj "$NEW_DJ_USER" "$NEW_DJ_PASS"
                 echo -e "${GREEN}✅ DJ user ${NEW_DJ_USER} added!${NC}"
                 echo -e "${YELLOW}Connection details:${NC}"
                 echo "  URL: https://${DJ_DOMAIN}"
@@ -672,7 +680,13 @@ while true; do
                 echo -e "${RED}Username cannot be empty${NC}"
                 continue
             fi
-            htpasswd /etc/nginx/.htpasswd_files "$NEW_FB_USER"
+            read -sp "Enter password for ${NEW_FB_USER}: " NEW_FB_PASS
+            echo ""
+            if [ -z "$NEW_FB_PASS" ]; then
+                echo -e "${RED}Password cannot be empty${NC}"
+                continue
+            fi
+            htpasswd -b /etc/nginx/.htpasswd_files "$NEW_FB_USER" "$NEW_FB_PASS"
             echo -e "${GREEN}✅ FileBrowser user ${NEW_FB_USER} added!${NC}"
             echo -e "${YELLOW}They can log in at: https://files.${DOMAIN}${NC}"
             ;;
@@ -696,7 +710,13 @@ while true; do
                 echo -e "${RED}Username cannot be empty${NC}"
                 continue
             fi
-            htpasswd -b /etc/nginx/.htpasswd_dj "$NEW_DJ_USER"
+            read -sp "Enter password for ${NEW_DJ_USER}: " NEW_DJ_PASS
+            echo ""
+            if [ -z "$NEW_DJ_PASS" ]; then
+                echo -e "${RED}Password cannot be empty${NC}"
+                continue
+            fi
+            htpasswd -b /etc/nginx/.htpasswd_dj "$NEW_DJ_USER" "$NEW_DJ_PASS"
             echo -e "${GREEN}✅ DJ user ${NEW_DJ_USER} added!${NC}"
             echo -e "${YELLOW}Connection details:${NC}"
             echo "  URL: https://dj.${DOMAIN}"
