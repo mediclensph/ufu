@@ -158,6 +158,7 @@ systemctl start icecast2
 
 # ---- Liquidsoap ----
 echo -e "${GREEN}Configuring Liquidsoap...${NC}"
+mkdir -p /etc/liquidsoap 
 mkdir -p /var/log/liquidsoap
 chown -R liquidsoap:liquidsoap /var/log/liquidsoap 2>/dev/null || chown -R icecast2:icecast /var/log/liquidsoap
 
