@@ -159,7 +159,6 @@ ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 
-ufw allow ssh
 ufw limit ssh
 
 for ip in $(cat /tmp/cf4 /tmp/cf6); do
@@ -360,15 +359,14 @@ echo -e "${YELLOW}IMPORTANT: DNS must point to this server${NC}"
 echo -e "${YELLOW}Cloudflare DNS - Orange Cloud ON must be set${NC}"
 echo -e "${YELLOW}========================================${NC}"
 read -p "Has DNS been configured for ${DOMAIN} and subdomains? (y/n): " DNS_READY
-
 if [[ "$DNS_READY" =~ ^[Yy]$ ]]; then
     if [ -n "$EMAIL" ]; then
-        certbot --nginx -d ${PLAY_DOMAIN} -d ${FILES_DOMAIN} -d ${DJ_DOMAIN} --email ${EMAIL} --non-interactive --agree-tos
+        certbot --nginx -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --email "${EMAIL}" --non-interactive --agree-tos
     else
-        certbot --nginx -d ${PLAY_DOMAIN} -d ${FILES_DOMAIN} -d ${DJ_DOMAIN}
+        certbot --nginx -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --register-unsafely-without-email --non-interactive --agree-tos
     fi
     systemctl reload nginx
-    echo -e "${GREEN}✅ SSL certificate installed!${NC}"
+    echo -e "${GREEN}✅ SSL certificate installed!${NC}
 else
     echo -e "${YELLOW}⚠️  Skipping SSL certificate installation.${NC}"
     echo -e "${YELLOW}   Run later: sudo certbot --nginx -d ${PLAY_DOMAIN} -d ${FILES_DOMAIN} -d ${DJ_DOMAIN}${NC}"
@@ -550,7 +548,7 @@ while true; do
                 echo -e "${RED}Username cannot be empty${NC}"
                 continue
             fi
-            grep -v "^${REMOVE_FB_USER}:" /etc/nginx/.htpasswd_files > /tmp/.htpasswd_files.tmp
+            awk -F: -v user="$REMOVE_FB_USER" '$1 != user' /etc/nginx/.htpasswd_files > /tmp/.htpasswd_files.tmp
             mv /tmp/.htpasswd_files.tmp /etc/nginx/.htpasswd_files
             echo -e "${GREEN}✅ FileBrowser user ${REMOVE_FB_USER} removed!${NC}"
             ;;
@@ -579,7 +577,7 @@ while true; do
                 echo -e "${RED}Username cannot be empty${NC}"
                 continue
             fi
-            grep -v "^${REMOVE_DJ_USER}:" /etc/nginx/.htpasswd_dj > /tmp/.htpasswd_dj.tmp
+            awk -F: -v user="$REMOVE_DJ_USER" '$1 != user' /etc/nginx/.htpasswd_dj > /tmp/.htpasswd_dj.tmp
             mv /tmp/.htpasswd_dj.tmp /etc/nginx/.htpasswd_dj
             echo -e "${GREEN}✅ DJ user ${REMOVE_DJ_USER} removed!${NC}"
             ;;
