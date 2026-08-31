@@ -20,15 +20,25 @@ if [ -z "$DOMAIN" ]; then
     exit 1
 fi
 
+echo ""
+read -p "Enter your radio station name: " RADIO_NAME
+if [ -z "$RADIO_NAME" ]; then
+    RADIO_NAME="My Radio"
+    echo -e "${YELLOW}Using default radio name: ${RADIO_NAME}${NC}"
+fi
+
 # Subdomains
 PLAY_DOMAIN="play.${DOMAIN}"
 FILES_DOMAIN="files.${DOMAIN}"
 DJ_DOMAIN="dj.${DOMAIN}"
 
 echo -e "${YELLOW}Using subdomains:${NC}"
+echo "  - Main website: ${DOMAIN}"
 echo "  - Listeners: ${PLAY_DOMAIN}"
 echo "  - File manager: ${FILES_DOMAIN}"
 echo "  - DJ source: ${DJ_DOMAIN}"
+echo "  - Radio name: ${RADIO_NAME}"
+echo ""
 read -p "Is this correct? (y/n): " CONFIRM
 if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
     echo "Exiting..."
@@ -74,10 +84,24 @@ echo ""
 echo "Please save these somewhere safe."
 echo ""
 
+# Save radio config
+mkdir -p /etc/radio
+cat <<EOF > /etc/radio/config
+# Radio Configuration
+RADIO_NAME="${RADIO_NAME}"
+DOMAIN="${DOMAIN}"
+PLAY_DOMAIN="${PLAY_DOMAIN}"
+FILES_DOMAIN="${FILES_DOMAIN}"
+DJ_DOMAIN="${DJ_DOMAIN}"
+ICECAST_SOURCE_PASS="${ICECAST_SOURCE_PASS}"
+ICECAST_RELAY_PASS="${ICECAST_RELAY_PASS}"
+ICECAST_ADMIN_PASS="${ICECAST_ADMIN_PASS}"
+EOF
+
 # ---- System update and packages ----
 echo -e "${GREEN}Updating system and installing packages...${NC}"
 DEBIAN_FRONTEND=noninteractive apt update && DEBIAN_FRONTEND=noninteractive apt upgrade -y
-DEBIAN_FRONTEND=noninteractive apt install -y nginx icecast2 liquidsoap fail2ban ufw curl certbot python3-certbot-nginx
+DEBIAN_FRONTEND=noninteractive apt install -y nginx icecast2 liquidsoap fail2ban ufw curl certbot python3-certbot-nginx php-fpm php-common
 
 # ---- FileBrowser ----
 echo -e "${GREEN}Installing FileBrowser...${NC}"
@@ -227,20 +251,52 @@ chmod +x /usr/local/bin/update-cloudflare-ufw
 
 # ---- Schedule Cloudflare IP updates ----
 echo -e "${GREEN}Scheduling weekly Cloudflare IP updates...${NC}"
-(crontab -l 2>/dev/null; echo "0 3 * * 1 /usr/local/bin/update-cloudflare-ufw") | crontab - 2>/dev/null || true
+# Remove any existing update-cloudflare-ufw cron jobs to prevent duplicates
+(crontab -l 2>/dev/null | grep -v 'update-cloudflare-ufw'; echo "0 3 * * 1 /usr/local/bin/update-cloudflare-ufw") | crontab - 2>/dev/null || true
 echo -e "${GREEN}✅ Weekly Cloudflare IP updates scheduled!${NC}"
+
+# Detect PHP-FPM socket dynamically to prevent 502 Bad Gateway
+PHP_FPM_SOCKET=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -n 1)
+if [ -z "$PHP_FPM_SOCKET" ]; then
+    PHP_FPM_SOCKET="unix:/var/run/php/php-fpm.sock"
+fi
 
 # ---- Nginx with Bot Protection ----
 echo -e "${GREEN}Configuring Nginx with bot protection...${NC}"
-mkdir -p /var/www/play
 
-cat <<'EOF' > /var/www/play/index.html
+# --- Create play subdomain website (simple player) ---
+mkdir -p /var/www/play
+cat <<EOF > /var/www/play/index.html
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Radio – MP3 128</title>
+    <title>${RADIO_NAME} – Live Stream</title>
+    
+    <!-- Favicon (vinyl logo) -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="alternate icon" href="/favicon.svg">
+    
+    <!-- Standard SEO -->
+    <meta name="description" content="Listen to ${RADIO_NAME} live! High quality 128kbps MP3 stream.">
+    <meta name="keywords" content="${RADIO_NAME}, live radio, internet radio, streaming, ${DOMAIN}">
+    <meta name="robots" content="index, follow">
+    
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://${PLAY_DOMAIN}/">
+    <meta property="og:title" content="${RADIO_NAME} – Live Stream">
+    <meta property="og:description" content="Listen to ${RADIO_NAME} live! High quality 128kbps MP3 stream.">
+    <meta property="og:image" content="https://${PLAY_DOMAIN}/favicon.svg">
+    <meta property="og:site_name" content="${RADIO_NAME}">
+    
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="${RADIO_NAME} – Live Stream">
+    <meta name="twitter:description" content="Listen to ${RADIO_NAME} live!">
+    <meta name="twitter:image" content="https://${PLAY_DOMAIN}/favicon.svg">
+    
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 2rem; background: #1a1a1a; color: #eee; }
         audio { width: 80%; max-width: 500px; margin: 2rem auto; display: block; }
@@ -249,16 +305,816 @@ cat <<'EOF' > /var/www/play/index.html
     </style>
 </head>
 <body>
-    <h1>🎵 My Radio – MP3 128 kbps</h1>
+    <h1>🎵 ${RADIO_NAME}</h1>
     <audio controls autoplay>
-        <source src="/live.mp3" type="audio/mpeg">
+        <source src="/" type="audio/mpeg">
         Your browser does not support the audio element.
     </audio>
-    <p>Direct stream: <a href="/live.mp3">/live.mp3</a></p>
+    <p>Direct stream: <a href="/">/</a></p>
 </body>
 </html>
 EOF
 chown -R www-data:www-data /var/www/play
+
+# --- Create main domain website with radio name ---
+mkdir -p /var/www/domain
+
+# Create PHP index with radio name from config
+cat <<'PHPEOF' > /var/www/domain/index.php
+<?php
+// Load radio configuration
+$config = [];
+if (file_exists('/etc/radio/config')) {
+    $lines = file('/etc/radio/config', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    foreach ($lines as $line) {
+        if (strpos($line, '=') !== false && strpos($line, '#') !== 0) {
+            list($key, $value) = explode('=', $line, 2);
+            $config[trim($key)] = trim($value, "\"' ");
+        }
+    }
+}
+
+$RADIO_NAME = $config['RADIO_NAME'] ?? 'My Radio';
+$DOMAIN = $config['DOMAIN'] ?? 'domain.tld';
+$PLAY_DOMAIN = $config['PLAY_DOMAIN'] ?? 'play.domain.tld';
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?php echo htmlspecialchars($RADIO_NAME); ?> – Live Streaming</title>
+        <!-- Favicon (vinyl logo) -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="alternate icon" href="/favicon.svg">
+    
+    <!-- Open Graph Image (vinyl logo) -->
+    <meta property="og:image" content="https://<?php echo htmlspecialchars($DOMAIN); ?>/favicon.svg">
+    <meta property="og:image:type" content="image/svg+xml">
+    <meta property="og:image:width" content="512">
+    <meta property="og:image:height" content="512">
+    
+    <!-- Twitter Card Image -->
+    <meta name="twitter:image" content="https://<?php echo htmlspecialchars($DOMAIN); ?>/favicon.svg">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            min-height: 100vh;
+            background: #0a0a0f;
+            color: #f0f0f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 0;
+            background: linear-gradient(135deg, #0a0a0f 0%, #1a0a2e 30%, #2d1b4e 60%, #1a0a2e 80%, #0a0a0f 100%);
+        }
+
+        .bg::before {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(ellipse at 20% 50%, rgba(120, 80, 255, 0.20) 0%, transparent 60%),
+                radial-gradient(ellipse at 80% 20%, rgba(255, 80, 120, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(80, 200, 255, 0.10) 0%, transparent 50%);
+            animation: bgPulse 12s ease-in-out infinite alternate;
+        }
+
+        @keyframes bgPulse {
+            0% { opacity: 0.7; transform: scale(1); }
+            100% { opacity: 1; transform: scale(1.05); }
+        }
+
+        .orb {
+            position: fixed;
+            border-radius: 50%;
+            filter: blur(100px);
+            opacity: 0.25;
+            pointer-events: none;
+            z-index: 0;
+            animation: orbFloat 20s ease-in-out infinite alternate;
+        }
+
+        .orb-1 { width: 500px; height: 500px; background: #7c3aed; top: -150px; right: -150px; animation-delay: 0s; }
+        .orb-2 { width: 400px; height: 400px; background: #ec4899; bottom: -100px; left: -100px; animation-delay: -7s; }
+        .orb-3 { width: 300px; height: 300px; background: #06b6d4; top: 50%; left: 50%; transform: translate(-50%, -50%); animation-delay: -14s; }
+
+        @keyframes orbFloat {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(40px, -40px) scale(1.15); }
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 700px;
+            width: 90%;
+            padding: 2rem;
+            text-align: center;
+            animation: fadeInUp 1s ease-out;
+        }
+
+        @keyframes fadeInUp {
+            0% { opacity: 0; transform: translateY(30px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+
+        .vinyl-wrapper {
+            position: relative;
+            width: 130px;
+            height: 130px;
+            margin: 0 auto 1.5rem;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        .vinyl-wrapper:hover { transform: scale(1.05); }
+
+        .vinyl {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: radial-gradient(circle at 30% 30%, #444, #1a1a1a 50%, #0a0a0a 70%, #000 100%);
+            box-shadow: 0 0 0 3px rgba(255,255,255,0.05), 0 0 0 8px rgba(255,255,255,0.02), 0 20px 60px rgba(0,0,0,0.6);
+            position: relative;
+            animation: spinVinyl 4s linear infinite;
+            animation-play-state: paused;
+        }
+
+        .vinyl::before {
+            content: '';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 30%; height: 30%;
+            border-radius: 50%;
+            background: radial-gradient(circle at 40% 40%, #666, #222 40%, #0a0a0a 70%, #000);
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+        }
+
+        .vinyl::after {
+            content: '';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 12%; height: 12%;
+            border-radius: 50%;
+            background: radial-gradient(circle at 40% 40%, #888, #333 40%, #111 70%, #000);
+            box-shadow: 0 0 10px rgba(0,0,0,0.5), inset 0 0 10px rgba(0,0,0,0.3);
+        }
+
+        .vinyl .groove {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            border: 1px solid rgba(255,255,255,0.02);
+            pointer-events: none;
+        }
+        .vinyl .groove-1 { width: 55%; height: 55%; }
+        .vinyl .groove-2 { width: 70%; height: 70%; }
+        .vinyl .groove-3 { width: 85%; height: 85%; }
+
+         .vinyl-label {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 55%; height: 55%;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #9d6bff, #6d28d9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 800;
+            color: rgba(255,255,255,0.95);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            z-index: 2;
+            box-shadow: 0 4px 20px rgba(124,58,237,0.4), inset 0 0 20px rgba(0,0,0,0.2);
+            text-align: center;
+            line-height: 1.2;
+            padding: 0.4rem;
+            word-break: break-word;
+        }
+        .vinyl-label .name { 
+            font-size: 0.65rem; 
+            font-weight: 800;
+            max-width: 90%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .vinyl-label .live { 
+            font-size: 0.45rem; 
+            opacity: 0.75; 
+            display: block; 
+            font-weight: 600; 
+            letter-spacing: 0.2em; 
+            margin-top: 0.3rem;
+            padding: 0.15rem 0.5rem;
+            background: rgba(0,0,0,0.2);
+            border-radius: 100px;
+        }
+        .vinyl-label span { font-size: 0.35rem; opacity: 0.6; display: block; font-weight: 300; letter-spacing: 0.1em; }
+
+        .tonearm {
+            position: absolute;
+            top: -10%;
+            right: -15%;
+            width: 35%;
+            height: 35%;
+            z-index: 3;
+            pointer-events: none;
+            transform: rotate(25deg);
+            transform-origin: bottom left;
+            transition: transform 0.5s ease;
+        }
+        .tonearm::before {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0;
+            width: 2px;
+            height: 100%;
+            background: linear-gradient(to top, rgba(200,180,160,0.6), rgba(200,180,160,0.1));
+            border-radius: 2px;
+            transform: rotate(-5deg);
+            transform-origin: bottom;
+            box-shadow: 0 0 10px rgba(0,0,0,0.3);
+        }
+        .tonearm::after {
+            content: '';
+            position: absolute;
+            bottom: -4px; left: -4px;
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 40% 40%, #aaa, #555);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+
+        .vinyl-wrapper.playing .vinyl { animation-play-state: running; }
+        .vinyl-wrapper.playing .tonearm { transform: rotate(20deg); }
+
+        @keyframes spinVinyl {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .tagline {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.2em;
+            color: rgba(255,255,255,0.3);
+            margin-bottom: 0.5rem;
+        }
+
+        h1 {
+            font-size: 3.5rem;
+            font-weight: 900;
+            line-height: 1.05;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #ffffff 0%, #a78bfa 40%, #f472b6 70%, #ffffff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            background-size: 200% 200%;
+            animation: gradientShift 6s ease-in-out infinite alternate;
+        }
+
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 100% 50%; }
+        }
+
+        .subtitle {
+            font-size: 1.05rem;
+            color: rgba(255,255,255,0.4);
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+            font-weight: 300;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.4rem 1.2rem;
+            border-radius: 100px;
+            background: rgba(16,185,129,0.08);
+            border: 1px solid rgba(16,185,129,0.12);
+            color: #34d399;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 1.5rem;
+        }
+
+        .status .dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: #34d399;
+            animation: dotPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes dotPulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.3; transform: scale(0.6); }
+        }
+
+        .now-playing {
+            margin: 0 0 1.5rem;
+            padding: 0.5rem 1.2rem;
+            border-radius: 100px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.04);
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.35);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.7rem;
+        }
+        .now-playing i { color: #7c3aed; }
+        .now-playing strong { color: rgba(255,255,255,0.5); font-weight: 500; }
+
+        .player-wrapper {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 20px;
+            padding: 1.5rem 2rem;
+            margin-bottom: 1.5rem;
+            transition: all 0.3s ease;
+        }
+        .player-wrapper:hover {
+            border-color: rgba(124,58,237,0.15);
+            background: rgba(255,255,255,0.04);
+        }
+        .player-wrapper audio {
+            width: 100%;
+            height: 54px;
+            outline: none;
+            border-radius: 12px;
+        }
+
+        audio::-webkit-media-controls-panel {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+        }
+        audio::-webkit-media-controls-play-button {
+            background: linear-gradient(135deg, #7c3aed, #6d28d9);
+            border-radius: 50%;
+            color: white;
+        }
+        audio::-webkit-media-controls-timeline {
+            background: rgba(255,255,255,0.1);
+            border-radius: 10px;
+            height: 4px;
+        }
+        audio::-webkit-media-controls-volume-slider {
+            background: rgba(255,255,255,0.1);
+            border-radius: 10px;
+            height: 4px;
+        }
+        audio {
+            background: rgba(255,255,255,0.03);
+            border-radius: 12px;
+            padding: 0.2rem;
+        }
+
+        .stream-info {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 0.5rem;
+            padding: 0.8rem 1rem;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.03);
+        }
+        .stream-info .label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: rgba(255,255,255,0.2);
+            font-weight: 600;
+        }
+        .stream-info .url {
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.4);
+            font-family: 'Courier New', monospace;
+            background: rgba(0,0,0,0.2);
+            padding: 0.2rem 0.8rem;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.04);
+            user-select: all;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .stream-info .url:hover {
+            background: rgba(124,58,237,0.1);
+            border-color: rgba(124,58,237,0.2);
+            color: rgba(255,255,255,0.7);
+        }
+        .stream-info .copy-btn {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.06);
+            color: rgba(255,255,255,0.3);
+            padding: 0.3rem 0.8rem;
+            border-radius: 6px;
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-family: inherit;
+        }
+        .stream-info .copy-btn:hover {
+            background: rgba(124,58,237,0.1);
+            border-color: rgba(124,58,237,0.2);
+            color: rgba(255,255,255,0.7);
+        }
+        .stream-info .copy-btn.copied {
+            background: rgba(16,185,129,0.15);
+            border-color: rgba(16,185,129,0.2);
+            color: #34d399;
+        }
+
+        .external-instructions {
+            margin-top: 1.5rem;
+            padding: 1.2rem 1.5rem;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.04);
+            text-align: left;
+        }
+        .external-instructions summary {
+            cursor: pointer;
+            font-size: 0.8rem;
+            color: rgba(255,255,255,0.3);
+            font-weight: 500;
+            letter-spacing: 0.05em;
+            transition: color 0.2s ease;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+        }
+        .external-instructions summary:hover { color: rgba(255,255,255,0.6); }
+        .external-instructions summary::-webkit-details-marker { display: none; }
+        .external-instructions summary .arrow {
+            transition: transform 0.3s ease;
+            display: inline-block;
+        }
+        .external-instructions[open] summary .arrow { transform: rotate(90deg); }
+        .external-instructions .content {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255,255,255,0.04);
+        }
+        .external-instructions .content p {
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.35);
+            margin-bottom: 0.5rem;
+            line-height: 1.6;
+        }
+        .external-instructions .content .app-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 0.5rem;
+            margin-top: 0.8rem;
+        }
+        .external-instructions .content .app-grid .app {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0.8rem;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.03);
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.3);
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+        .external-instructions .content .app-grid .app:hover {
+            background: rgba(124,58,237,0.05);
+            border-color: rgba(124,58,237,0.1);
+            color: rgba(255,255,255,0.6);
+        }
+        .external-instructions .content .app-grid .app i {
+            font-size: 0.9rem;
+            color: rgba(255,255,255,0.2);
+        }
+
+        .socials {
+            display: flex;
+            gap: 1.2rem;
+            justify-content: center;
+            margin-top: 2rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid rgba(255,255,255,0.04);
+        }
+        .socials a {
+            color: rgba(255,255,255,0.12);
+            font-size: 1.1rem;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.03);
+        }
+        .socials a:hover {
+            color: #a78bfa;
+            background: rgba(124,58,237,0.08);
+            border-color: rgba(124,58,237,0.15);
+            transform: translateY(-3px);
+        }
+
+        @media (max-width: 700px) {
+            h1 { font-size: 2.8rem; }
+            .vinyl-wrapper { width: 100px; height: 100px; }
+            .player-wrapper { padding: 1rem 1.2rem; }
+            .stream-info { flex-direction: column; gap: 0.5rem; }
+            .stream-info .url { font-size: 0.75rem; word-break: break-all; width: 100%; text-align: center; }
+        }
+
+        @media (max-width: 480px) {
+            .container { padding: 1rem 0.5rem; }
+            h1 { font-size: 2.2rem; }
+            .vinyl-wrapper { width: 80px; height: 80px; }
+            .vinyl-label { font-size: 0.35rem; }
+            .vinyl-label span { font-size: 0.25rem; }
+            .subtitle { font-size: 0.9rem; }
+            .player-wrapper { padding: 0.8rem; border-radius: 14px; }
+            .player-wrapper audio { height: 44px; }
+            .external-instructions { padding: 0.8rem 1rem; }
+            .external-instructions .content .app-grid { grid-template-columns: 1fr 1fr; }
+            .now-playing { font-size: 0.75rem; padding: 0.3rem 0.8rem; }
+            .socials { gap: 0.6rem; }
+            .socials a { width: 34px; height: 34px; font-size: 0.9rem; }
+            .orb-1, .orb-2 { width: 200px; height: 200px; }
+            .tonearm { display: none; }
+        }
+
+        @media (max-width: 360px) {
+            h1 { font-size: 1.8rem; }
+            .external-instructions .content .app-grid { grid-template-columns: 1fr; }
+        }
+
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: #0a0a0f; }
+        ::-webkit-scrollbar-thumb { background: #7c3aed; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6d28d9; }
+        ::selection { background: rgba(124,58,237,0.3); color: #fff; }
+    </style>
+</head>
+<body>
+
+    <div class="bg"></div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+
+    <div class="container">
+
+        <div class="vinyl-wrapper" id="vinylWrapper">
+            <div class="vinyl" id="vinyl">
+                <div class="groove groove-1"></div>
+                <div class="groove groove-2"></div>
+                <div class="groove groove-3"></div>
+                <div class="vinyl-label">
+                    <span class="name"><?php echo htmlspecialchars($RADIO_NAME); ?></span>
+                    <span class="live">LIVE</span>
+                </div>
+            </div>
+            <div class="tonearm"></div>
+        </div>
+
+        <p class="tagline">✦ Live 24/7</p>
+
+        <h1><?php echo htmlspecialchars($RADIO_NAME); ?></h1>
+
+        <div class="status">
+            <span class="dot"></span>
+            Currently Broadcasting
+        </div>
+
+        <p class="subtitle">
+            The best mix of music, community, and energy.<br>
+            Tune in now and feel the vibe.
+        </p>
+
+        <div class="now-playing" id="nowPlaying">
+            <i class="fas fa-circle-notch fa-spin"></i>
+            <span id="nowPlayingText">Loading now playing…</span>
+        </div>
+
+        <div class="player-wrapper">
+            <audio id="radioPlayer" controls preload="none">
+                <source src="https://<?php echo htmlspecialchars($PLAY_DOMAIN); ?>" type="audio/mpeg">
+                Your browser does not support the audio element.
+            </audio>
+        </div>
+
+        <div class="stream-info">
+            <span class="label">Stream URL</span>
+            <code class="url" id="streamUrl">https://<?php echo htmlspecialchars($PLAY_DOMAIN); ?></code>
+            <button class="copy-btn" id="copyBtn" onclick="copyStreamUrl()">
+                <i class="fas fa-copy"></i> Copy
+            </button>
+        </div>
+
+        <details class="external-instructions" id="externalHelp">
+            <summary>
+                <span class="arrow">▶</span>
+                <i class="fas fa-headphones"></i>
+                Listen in your favorite player
+            </summary>
+            <div class="content">
+                <p><strong>Add this URL</strong> to any media player (VLC, Winamp, iTunes, etc.):</p>
+                <div style="background:rgba(0,0,0,0.2);padding:0.5rem 1rem;border-radius:8px;margin:0.5rem 0;font-family:monospace;font-size:0.85rem;color:rgba(255,255,255,0.5);word-break:break-all;border:1px solid rgba(255,255,255,0.04);">
+                    https://<?php echo htmlspecialchars($PLAY_DOMAIN); ?>
+                </div>
+                <p style="margin-top:0.8rem;"><strong>Popular players:</strong></p>
+                <div class="app-grid">
+                    <a href="https://www.videolan.org/vlc/" target="_blank" class="app"><i class="fab fa-vimeo-v"></i> VLC</a>
+                    <a href="https://www.winamp.com/" target="_blank" class="app"><i class="fas fa-music"></i> Winamp</a>
+                    <a href="https://www.audacious-media-player.org/" target="_blank" class="app"><i class="fas fa-play-circle"></i> Audacious</a>
+                    <a href="https://www.foobar2000.org/" target="_blank" class="app"><i class="fas fa-headphones"></i> foobar2000</a>
+                    <a href="https://www.apple.com/itunes/" target="_blank" class="app"><i class="fab fa-apple"></i> iTunes</a>
+                    <a href="https://www.clementine-player.org/" target="_blank" class="app"><i class="fas fa-seedling"></i> Clementine</a>
+                </div>
+            </div>
+        </details>
+
+        <div class="socials">
+            <a href="#" title="Instagram" aria-label="Instagram"><i class="fab fa-instagram"></i></a>
+            <a href="#" title="Twitter / X" aria-label="Twitter"><i class="fab fa-twitter"></i></a>
+            <a href="#" title="YouTube" aria-label="YouTube"><i class="fab fa-youtube"></i></a>
+            <a href="#" title="Discord" aria-label="Discord"><i class="fab fa-discord"></i></a>
+            <a href="#" title="Email" aria-label="Email"><i class="fas fa-envelope"></i></a>
+        </div>
+
+    </div>
+
+    <script>
+        const audio = document.getElementById('radioPlayer');
+        const vinylWrapper = document.getElementById('vinylWrapper');
+
+        audio.volume = 0.8;
+
+        document.addEventListener('DOMContentLoaded', function() {
+            audio.play().catch(function(err) {
+                const nowPlaying = document.getElementById('nowPlayingText');
+                if (nowPlaying) {
+                    nowPlaying.textContent = '🎵 Click play to start listening';
+                }
+                console.log('Auto-play blocked:', err.message);
+            });
+        });
+
+        audio.addEventListener('play', function() {
+            vinylWrapper.classList.add('playing');
+        });
+
+        audio.addEventListener('pause', function() {
+            vinylWrapper.classList.remove('playing');
+        });
+
+        async function fetchNowPlaying() {
+            const el = document.getElementById('nowPlayingText');
+            try {
+                const res = await fetch('https://<?php echo htmlspecialchars($PLAY_DOMAIN); ?>/status-json.xsl', {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                    mode: 'cors'
+                });
+
+                if (!res.ok) {
+                    el.textContent = '🎵 Now playing: Unknown track';
+                    return;
+                }
+
+                const data = await res.json();
+                const source = data?.icestats?.source;
+                if (source && Array.isArray(source) && source.length > 0) {
+                    const latest = source[source.length - 1];
+                    const title = latest?.title || 'Unknown track';
+                    const artist = latest?.artist || '';
+                    el.textContent = `🎵 ${artist ? artist + ' – ' : ''}${title}`;
+                } else {
+                    el.textContent = '🎵 Now playing: Unknown track';
+                }
+            } catch (err) {
+                if (!el.textContent.includes('Click play')) {
+                    el.textContent = '🎵 Tune in to hear the vibe!';
+                }
+                console.log('Now playing fetch error:', err.message);
+            }
+        }
+
+        setTimeout(fetchNowPlaying, 1000);
+        setInterval(fetchNowPlaying, 30000);
+
+        function copyStreamUrl() {
+            const url = document.getElementById('streamUrl').textContent;
+            const btn = document.getElementById('copyBtn');
+            
+            navigator.clipboard.writeText(url).then(() => {
+                btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+                    btn.classList.remove('copied');
+                }, 3000);
+            }).catch(() => {
+                const input = document.createElement('input');
+                input.value = url;
+                document.body.appendChild(input);
+                input.select();
+                document.execCommand('copy');
+                document.body.removeChild(input);
+                btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                    btn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+                    btn.classList.remove('copied');
+                }, 3000);
+            });
+        }
+
+        document.querySelectorAll('.copy-btn, .socials a, .vinyl-wrapper').forEach(el => {
+            el.addEventListener('touchstart', function() {
+                this.style.transition = 'transform 0.1s ease';
+            });
+        });
+
+        document.addEventListener('dblclick', (e) => e.preventDefault());
+    </script>
+</body>
+</html>
+PHPEOF
+
+# --- Create SVG favicon (vinyl with radio name) ---
+cat <<SVGEOF > /var/www/domain/favicon.svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="disk" cx="30%" cy="30%">
+      <stop offset="0%" stop-color="#444"/>
+      <stop offset="50%" stop-color="#1a1a1a"/>
+      <stop offset="70%" stop-color="#0a0a0a"/>
+      <stop offset="100%" stop-color="#000"/>
+    </radialGradient>
+    <radialGradient id="label" cx="40%" cy="40%">
+      <stop offset="0%" stop-color="#9d6bff"/>
+      <stop offset="100%" stop-color="#6d28d9"/>
+    </radialGradient>
+  </defs>
+  <!-- Outer disk -->
+  <circle cx="256" cy="256" r="250" fill="url(#disk)"/>
+  <!-- Grooves -->
+  <circle cx="256" cy="256" r="220" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+  <circle cx="256" cy="256" r="190" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+  <circle cx="256" cy="256" r="160" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+  <!-- Center label -->
+  <circle cx="256" cy="256" r="110" fill="url(#label)"/>
+  <!-- Radio name (curved around top) -->
+  <path id="topArc" d="M 146,256 A 110,110 0 0 1 366,256" fill="none"/>
+  <text font-family="Inter, Arial, sans-serif" font-weight="800" font-size="28" fill="white" text-anchor="middle" letter-spacing="2">
+    <textPath href="#topArc" startOffset="50%">${RADIO_NAME}</textPath>
+  </text>
+  <!-- LIVE badge -->
+  <text x="256" y="290" font-family="Inter, Arial, sans-serif" font-weight="600" font-size="20" fill="rgba(255,255,255,0.85)" text-anchor="middle" letter-spacing="4">LIVE</text>
+  <!-- Center hole -->
+  <circle cx="256" cy="256" r="12" fill="#000"/>
+</svg>
+SVGEOF
+
+# Also copy to play subdomain
+cp /var/www/domain/favicon.svg /var/www/play/favicon.svg
+
+chown -R www-data:www-data /var/www/domain
 
 # Set up htpasswd
 echo -e "${GREEN}Setting up HTTP Basic Auth...${NC}"
@@ -297,18 +1153,20 @@ map \$http_user_agent \$blocked_ua {
 # Block direct IP access (only allow via domain)
 map \$host \$blocked_host {
     default 1;
+    ${DOMAIN} 0;
     ${PLAY_DOMAIN} 0;
     ${FILES_DOMAIN} 0;
     ${DJ_DOMAIN} 0;
 }
 
-# ---- play subdomain ----
+# ---- Main domain ----
 server {
     listen 443 ssl http2;
-    server_name ${PLAY_DOMAIN};
+    listen [::]:443 ssl http2;
+    server_name ${DOMAIN};
 
-    root /var/www/play;
-    index index.html;
+    root /var/www/domain;
+    index index.php index.html;
 
     # Rate limiting for all requests
     limit_req zone=radio burst=20 nodelay;
@@ -323,11 +1181,47 @@ server {
         return 403;
     }
 
-    location = / {
-        try_files \$uri \$uri/ =404;
+    # PHP support
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass ${PHP_FPM_SOCKET};
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
     }
 
-    location /live.mp3 {
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+
+# ---- play subdomain ----
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${PLAY_DOMAIN};
+
+    # Rate limiting for all requests
+    limit_req zone=radio burst=20 nodelay;
+    limit_conn conn_limit 10;
+
+    # Bot protection for all requests
+    if (\$blocked_ua) { return 403; }
+    if (\$blocked_host) { return 403; }
+
+    # Allow Icecast status endpoints (needed for "Now Playing" JS fetch)
+    location = /status-json.xsl {
+        proxy_pass http://icecast/status-json.xsl;
+        proxy_set_header Host \$host;
+        add_header Access-Control-Allow-Origin *;
+    }
+
+    location = /status.xsl {
+        proxy_pass http://icecast/status.xsl;
+        proxy_set_header Host \$host;
+    }
+
+    # Proxy everything else to the live stream
+    location / {
         proxy_pass http://icecast/live.mp3;
         proxy_buffering off;
         
@@ -346,11 +1240,7 @@ server {
         proxy_set_header Server "nginx";
     }
 
-    location ~ ^/(admin|status|stats) {
-        return 404;
-    }
-
-    location / {
+    location ~ ^/(admin|stats) {
         return 404;
     }
 }
@@ -358,6 +1248,7 @@ server {
 # ---- files subdomain ----
 server {
     listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name ${FILES_DOMAIN};
 
     auth_basic "Restricted Area";
@@ -385,6 +1276,7 @@ server {
 # ---- dj subdomain ----
 server {
     listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name ${DJ_DOMAIN};
 
     auth_basic "DJ Area";
@@ -415,7 +1307,8 @@ server {
 # ---- HTTP to HTTPS redirect ----
 server {
     listen 80;
-    server_name ${PLAY_DOMAIN} ${FILES_DOMAIN} ${DJ_DOMAIN};
+    listen [::]:80;
+    server_name ${DOMAIN} ${PLAY_DOMAIN} ${FILES_DOMAIN} ${DJ_DOMAIN};
     
     # Rate limiting for redirects
     limit_req zone=radio burst=20 nodelay;
@@ -505,16 +1398,16 @@ read -p "Has DNS been configured for ${DOMAIN} and subdomains? (y/n): " DNS_READ
 
 if [[ "$DNS_READY" =~ ^[Yy]$ ]]; then
     if [ -n "$EMAIL" ]; then
-        certbot --nginx -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --email "${EMAIL}" --non-interactive --agree-tos
+        certbot --nginx -d "${DOMAIN}" -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --email "${EMAIL}" --non-interactive --agree-tos
     else
         echo -e "${YELLOW}No email provided. Using --register-unsafely-without-email${NC}"
-        certbot --nginx -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --register-unsafely-without-email --non-interactive --agree-tos
+        certbot --nginx -d "${DOMAIN}" -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --register-unsafely-without-email --non-interactive --agree-tos
     fi
     systemctl reload nginx
     echo -e "${GREEN}✅ SSL certificate installed!${NC}"
 else
     echo -e "${YELLOW}⚠️  Skipping SSL certificate installation.${NC}"
-    echo -e "${YELLOW}   Run later: sudo certbot --nginx -d ${PLAY_DOMAIN} -d ${FILES_DOMAIN} -d ${DJ_DOMAIN}${NC}"
+    echo -e "${YELLOW}   Run later: sudo certbot --nginx -d ${DOMAIN} -d ${PLAY_DOMAIN} -d ${FILES_DOMAIN} -d ${DJ_DOMAIN}${NC}"
 fi
 
 # ---- USER MANAGEMENT FUNCTIONS ----
@@ -548,7 +1441,6 @@ manage_users() {
                     echo -e "${RED}Password cannot be empty${NC}"
                     continue
                 fi
-                # Added "$NEW_FB_PASS" at the end
                 htpasswd -b /etc/nginx/.htpasswd_files "$NEW_FB_USER" "$NEW_FB_PASS"
                 echo -e "${GREEN}✅ FileBrowser user ${NEW_FB_USER} added!${NC}"
                 echo -e "${YELLOW}They can log in at: https://${FILES_DOMAIN}${NC}"
@@ -579,7 +1471,6 @@ manage_users() {
                     echo -e "${RED}Password cannot be empty${NC}"
                     continue
                 fi
-                # Added "$NEW_DJ_PASS" at the end
                 htpasswd -b /etc/nginx/.htpasswd_dj "$NEW_DJ_USER" "$NEW_DJ_PASS"
                 echo -e "${GREEN}✅ DJ user ${NEW_DJ_USER} added!${NC}"
                 echo -e "${YELLOW}Connection details:${NC}"
@@ -631,6 +1522,7 @@ echo "  FileBrowser:    ${FB_USER} / ${FB_PASS}"
 echo "  DJ user:        ${DJ_USER} / ${DJ_PASS}"
 echo ""
 echo -e "${YELLOW}🌐 Access:${NC}"
+echo "  Main website:   https://${DOMAIN}"
 echo "  Listeners:      https://${PLAY_DOMAIN}"
 echo "  File manager:   https://${FILES_DOMAIN}"
 echo "  DJ source:      https://${DJ_DOMAIN}"
