@@ -14,7 +14,7 @@ echo -e "${GREEN}========================================${NC}"
 
 # ---- Gather input ----
 echo ""
-read -p "Enter your main domain (e.g., radio.example.com): " DOMAIN
+read -p "Enter your main domain (e.g., example.com): " DOMAIN
 if [ -z "$DOMAIN" ]; then
     echo -e "${RED}Error: Domain cannot be empty${NC}"
     exit 1
@@ -82,9 +82,12 @@ apt install -y nginx icecast2 liquidsoap fail2ban ufw curl certbot python3-certb
 # ---- FileBrowser ----
 echo -e "${GREEN}Installing FileBrowser...${NC}"
 curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
-
 mkdir -p /var/music
 chown www-data:www-data /var/music
+
+# Initialize DB and create admin user
+filebrowser -d /etc/filebrowser.db users add "$FB_USER" "$FB_PASS" --perm.admin
+chown www-data:www-data /etc/filebrowser.db
 
 cat <<EOF > /etc/systemd/system/filebrowser.service
 [Unit]
@@ -119,6 +122,8 @@ systemctl start icecast2
 
 # ---- Liquidsoap ----
 echo -e "${GREEN}Configuring Liquidsoap...${NC}"
+mkdir -p /var/log/liquidsoap
+chown -R liquidsoap:liquidsoap /var/log/liquidsoap
 cat <<EOF > /etc/liquidsoap/radio.liq
 #!/usr/bin/liquidsoap
 set("log.file.path", "/var/log/liquidsoap/radio.log")
@@ -408,7 +413,7 @@ manage_users() {
                     continue
                 fi
                 # Create a temporary file without the user
-                grep -v "^${REMOVE_FB_USER}:" /etc/nginx/.htpasswd_files > /tmp/.htpasswd_files.tmp
+                awk -F: -v user="$REMOVE_FB_USER" '$1 != user' /etc/nginx/.htpasswd_files > /tmp/.htpasswd_files.tmp
                 mv /tmp/.htpasswd_files.tmp /etc/nginx/.htpasswd_files
                 echo -e "${GREEN}✅ FileBrowser user ${REMOVE_FB_USER} removed!${NC}"
                 ;;
@@ -443,7 +448,7 @@ manage_users() {
                     echo -e "${RED}Username cannot be empty${NC}"
                     continue
                 fi
-                grep -v "^${REMOVE_DJ_USER}:" /etc/nginx/.htpasswd_dj > /tmp/.htpasswd_dj.tmp
+                awk -F: -v user="$REMOVE_DJ_USER" '$1 != user' /etc/nginx/.htpasswd_dj > /tmp/.htpasswd_dj.tmp
                 mv /tmp/.htpasswd_dj.tmp /etc/nginx/.htpasswd_dj
                 echo -e "${GREEN}✅ DJ user ${REMOVE_DJ_USER} removed!${NC}"
                 ;;
