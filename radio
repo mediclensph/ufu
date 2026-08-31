@@ -225,6 +225,11 @@ rm -f /tmp/cf4 /tmp/cf6
 EOF
 chmod +x /usr/local/bin/update-cloudflare-ufw
 
+# ---- Schedule Cloudflare IP updates ----
+echo -e "${GREEN}Scheduling weekly Cloudflare IP updates...${NC}"
+(crontab -l 2>/dev/null; echo "0 3 * * 1 /usr/local/bin/update-cloudflare-ufw") | crontab - 2>/dev/null || true
+echo -e "${GREEN}✅ Weekly Cloudflare IP updates scheduled!${NC}"
+
 # ---- Nginx with Bot Protection ----
 echo -e "${GREEN}Configuring Nginx with bot protection...${NC}"
 mkdir -p /var/www/play
