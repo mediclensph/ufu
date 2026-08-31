@@ -76,8 +76,8 @@ echo ""
 
 # ---- System update and packages ----
 echo -e "${GREEN}Updating system and installing packages...${NC}"
-apt update && apt upgrade -y
-apt install -y nginx icecast2 liquidsoap fail2ban ufw curl certbot python3-certbot-nginx
+DEBIAN_FRONTEND=noninteractive apt update && DEBIAN_FRONTEND=noninteractive apt upgrade -y
+DEBIAN_FRONTEND=noninteractive apt install -y nginx icecast2 liquidsoap fail2ban ufw curl certbot python3-certbot-nginx
 
 # ---- FileBrowser ----
 echo -e "${GREEN}Installing FileBrowser...${NC}"
