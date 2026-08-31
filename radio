@@ -126,7 +126,27 @@ mkdir -p /var/log/liquidsoap
 chown -R liquidsoap:liquidsoap /var/log/liquidsoap
 
 cat <<EOF > /etc/liquidsoap/radio.liq
-# ... (your liquidsoap config with the safe_playlist fix above) ...
+#!/usr/bin/liquidsoap
+set("log.file.path", "/var/log/liquidsoap/radio.log")
+set("log.level", 3)
+
+playlist = playlist("/var/music", reload_mode="watch")
+safe_playlist = crossfade(playlist)
+
+# DJ input on port 8005 (localhost only)
+dj = input.harbor("dj", port=8005, password="${DJ_PASS}")
+
+# Fallback uses the crossfaded playlist
+radio = fallback(track_sensitive=true, [dj, safe_playlist])
+
+output.icecast(
+    %mp3(bitrate=128, samplerate=44100, stereo=true),
+    host="127.0.0.1",
+    port=8000,
+    password="${ICECAST_SOURCE_PASS}",
+    mount="/live.mp3",
+    radio
+)
 EOF
 
 # Create a dedicated systemd service to ensure the script actually runs
@@ -365,7 +385,7 @@ if [[ "$DNS_READY" =~ ^[Yy]$ ]]; then
         certbot --nginx -d "${PLAY_DOMAIN}" -d "${FILES_DOMAIN}" -d "${DJ_DOMAIN}" --register-unsafely-without-email --non-interactive --agree-tos
     fi
     systemctl reload nginx
-    echo -e "${GREEN}✅ SSL certificate installed!${NC}
+    echo -e "${GREEN}✅ SSL certificate installed!${NC}"
 else
     echo -e "${YELLOW}⚠️  Skipping SSL certificate installation.${NC}"
     echo -e "${YELLOW}   Run later: sudo certbot --nginx -d ${PLAY_DOMAIN} -d ${FILES_DOMAIN} -d ${DJ_DOMAIN}${NC}"
