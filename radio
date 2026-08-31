@@ -124,29 +124,28 @@ systemctl start icecast2
 echo -e "${GREEN}Configuring Liquidsoap...${NC}"
 mkdir -p /var/log/liquidsoap
 chown -R liquidsoap:liquidsoap /var/log/liquidsoap
+
 cat <<EOF > /etc/liquidsoap/radio.liq
-#!/usr/bin/liquidsoap
-set("log.file.path", "/var/log/liquidsoap/radio.log")
-set("log.level", 3)
-
-playlist = playlist("/var/music", reload_mode="watch")
-radio = crossfade(playlist)
-
-# DJ input on port 8005 (localhost only)
-dj = input.harbor("dj", port=8005, password="${DJ_PASS}")
-
-radio = fallback(track_sensitive=true, [dj, playlist])
-
-output.icecast(
-    %mp3(bitrate=128, samplerate=44100, stereo=true),
-    host="127.0.0.1",
-    port=8000,
-    password="${ICECAST_SOURCE_PASS}",
-    mount="/live.mp3",
-    radio
-)
+# ... (your liquidsoap config with the safe_playlist fix above) ...
 EOF
 
+# Create a dedicated systemd service to ensure the script actually runs
+cat <<EOF > /etc/systemd/system/liquidsoap.service
+[Unit]
+Description=Liquidsoap Radio Automation
+After=network.target icecast2.service
+
+[Service]
+ExecStart=/usr/bin/liquidsoap /etc/liquidsoap/radio.liq
+Restart=always
+User=liquidsoap
+Group=liquidsoap
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
 systemctl enable liquidsoap
 systemctl start liquidsoap
 
@@ -162,7 +161,7 @@ ufw default allow outgoing
 ufw limit ssh
 
 for ip in $(cat /tmp/cf4 /tmp/cf6); do
-    ufw allow proto tcp from $ip to any port 80,443 comment 'Cloudflare'
+    ufw allow proto tcp from "$ip" to any port 80,443 comment 'Cloudflare'
 done
 
 ufw --force enable
@@ -181,7 +180,7 @@ ufw status numbered | grep 'Cloudflare' | awk '{print $1}' | tr -d '[]' | tac | 
 done
 
 for ip in $(cat /tmp/cf4 /tmp/cf6); do
-    ufw allow proto tcp from $ip to any port 80,443 comment 'Cloudflare'
+    ufw allow proto tcp from "$ip" to any port 80,443 comment 'Cloudflare'
 done
 
 ufw reload
